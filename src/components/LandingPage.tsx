@@ -20,7 +20,7 @@ import {
   Star,
   Sparkles,
   Activity,
-  Vault,
+  Safe,
   Brain,
   Heart,
   Target,
@@ -94,7 +94,7 @@ const LandingPage: React.FC = () => {
     {
       label: "Total Value Locked",
       value: "$2.3B",
-      icon: <Vault className="h-5 w-5" />,
+      icon: <Safe className="h-5 w-5" />,
     },
     {
       label: "Active Investors",
