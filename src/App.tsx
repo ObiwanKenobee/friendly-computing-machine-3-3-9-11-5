@@ -68,7 +68,7 @@ const createSafeLazyImport = (
 
 // Core platform pages
 const LandingPage = createSafeLazyImport(
-  () => import("./components/QuantumVestLandingPage"),
+  () => import("./components/LandingPage"),
   "LandingPage",
 );
 const MainDashboard = createSafeLazyImport(
