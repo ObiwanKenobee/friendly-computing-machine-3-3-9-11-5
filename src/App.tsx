@@ -66,11 +66,8 @@ const createSafeLazyImport = (
   );
 };
 
-// Core platform pages
-const LandingPage = createSafeLazyImport(
-  () => import("./components/LandingPage"),
-  "LandingPage",
-);
+// Core platform pages - Direct import to fix loading issues
+import LandingPageComponent from "./components/LandingPage";
 const MainDashboard = createSafeLazyImport(
   () => import("./components/MainDashboard"),
   "MainDashboard",
