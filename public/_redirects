@@ -1,0 +1,26 @@
+# Netlify/OnRender SPA Routing Support
+# Redirect all non-file requests to index.html for client-side routing
+
+# API routes should be handled separately
+/api/*  /api/:splat  200
+
+# Health check endpoint
+/health  /api/health.json  200
+
+# Asset files should be served directly
+/assets/*  /assets/:splat  200
+/favicon.ico  /favicon.ico  200
+/robots.txt  /robots.txt  200
+/site.webmanifest  /site.webmanifest  200
+
+# Legacy redirects
+/home  /  301!
+/dashboard-old  /dashboard  301!
+
+# Catch-all rule for SPA routing
+# This must be the last rule
+/*  /index.html  200
+
+# Error pages
+/404  /index.html  404
+/500  /index.html  500

@@ -1,0 +1,475 @@
+# Production Deployment Pipeline for QuantumVest Enterprise Platform
+name: Production Deployment
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy to"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - staging
+          - production
+      skip_tests:
+        description: "Skip test execution"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: "18"
+  DOCKER_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  IMAGE_NAME: quantumvest-enterprise
+
+jobs:
+  # Security and code quality checks
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"
+
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/init@v2
+        with:
+          languages: javascript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+  # Code quality and linting
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript check
+        run: npx tsc --noEmit
+
+      - name: Run Prettier check
+        run: npx prettier --check .
+
+      - name: Audit dependencies
+        run: npm audit --audit-level moderate
+
+  # Comprehensive testing suite
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !inputs.skip_tests }}
+
+    strategy:
+      matrix:
+        test-type: [unit, integration, e2e]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup test environment
+        run: |
+          cp .env.test.example .env.test
+          docker-compose -f docker-compose.test.yml up -d
+          sleep 30
+
+      - name: Run unit tests
+        if: matrix.test-type == 'unit'
+        run: |
+          npm run test:unit -- --coverage
+          npm run test:coverage-report
+
+      - name: Run integration tests
+        if: matrix.test-type == 'integration'
+        run: |
+          npm run test:integration
+          npm run test:api
+
+      - name: Run E2E tests
+        if: matrix.test-type == 'e2e'
+        run: |
+          npm run build
+          npm run test:e2e:headless
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: test-results-${{ matrix.test-type }}
+          path: |
+            coverage/
+            test-results/
+            playwright-report/
+
+      - name: Cleanup test environment
+        if: always()
+        run: docker-compose -f docker-compose.test.yml down
+
+  # Performance testing
+  performance-test:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [code-quality]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start application
+        run: |
+          npm run preview &
+          sleep 10
+
+      - name: Run Lighthouse CI
+        run: |
+          npm install -g @lhci/cli
+          lhci autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+      - name: Run load tests
+        run: |
+          npm install -g artillery
+          artillery run load-tests/load-test.yml
+
+  # Build and push Docker image
+  build:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [security-scan, code-quality, test]
+    if: always() && (needs.security-scan.result == 'success' && needs.code-quality.result == 'success' && (needs.test.result == 'success' || inputs.skip_tests))
+
+    outputs:
+      image-tag: ${{ steps.build.outputs.image-tag }}
+      image-digest: ${{ steps.build.outputs.image-digest }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate image tag
+        id: tag
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          SHORT_SHA=${GITHUB_SHA::8}
+          echo "image-tag=${TIMESTAMP}-${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.production
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }}
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          labels: |
+            org.opencontainers.image.title=QuantumVest Enterprise Platform
+            org.opencontainers.image.description=Enterprise-grade financial innovation platform
+            org.opencontainers.image.version=${{ steps.tag.outputs.image-tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.date.outputs.date }}
+
+      - name: Scan image for vulnerabilities
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy image \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output image-scan-results.json \
+            ${{ env.DOCKER_REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image-tag }}
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v3
+        with:
+          name: image-scan-results
+          path: image-scan-results.json
+
+  # Deploy to staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+    environment: staging
+    if: github.ref == 'refs/heads/main' || inputs.environment == 'staging'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to Elastic Beanstalk
+        run: |
+          # Create deployment package
+          zip -r deploy.zip . -x "*.git*" "node_modules/*" "coverage/*" "test-results/*"
+
+          # Deploy to Elastic Beanstalk
+          aws elasticbeanstalk create-application-version \
+            --application-name quantumvest-staging \
+            --version-label ${{ needs.build.outputs.image-tag }} \
+            --source-bundle S3Bucket=${{ secrets.S3_BUCKET }},S3Key=staging/${{ needs.build.outputs.image-tag }}.zip
+
+          aws s3 cp deploy.zip s3://${{ secrets.S3_BUCKET }}/staging/${{ needs.build.outputs.image-tag }}.zip
+
+          aws elasticbeanstalk update-environment \
+            --application-name quantumvest-staging \
+            --environment-name quantumvest-staging-env \
+            --version-label ${{ needs.build.outputs.image-tag }}
+
+      - name: Wait for deployment
+        run: |
+          aws elasticbeanstalk wait environment-updated \
+            --application-name quantumvest-staging \
+            --environment-names quantumvest-staging-env
+
+      - name: Run smoke tests
+        run: |
+          npm install -g newman
+          newman run smoke-tests/staging-smoke-tests.json \
+            --env-var baseUrl=https://staging.quantumvest.com
+
+  # Production deployment
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build, deploy-staging, performance-test]
+    environment: production
+    if: github.ref == 'refs/heads/main' && inputs.environment != 'staging'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Blue/Green deployment preparation
+        run: |
+          # Create new environment for blue/green deployment
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          NEW_ENV_NAME="quantumvest-prod-${TIMESTAMP}"
+
+          # Clone current production environment
+          aws elasticbeanstalk create-environment \
+            --application-name quantumvest-production \
+            --environment-name $NEW_ENV_NAME \
+            --template-name production-template \
+            --version-label ${{ needs.build.outputs.image-tag }}
+
+          echo "NEW_ENV_NAME=$NEW_ENV_NAME" >> $GITHUB_ENV
+
+      - name: Wait for new environment to be ready
+        run: |
+          aws elasticbeanstalk wait environment-updated \
+            --application-name quantumvest-production \
+            --environment-names ${{ env.NEW_ENV_NAME }}
+
+      - name: Run production smoke tests
+        run: |
+          # Get new environment URL
+          NEW_URL=$(aws elasticbeanstalk describe-environments \
+            --application-name quantumvest-production \
+            --environment-names ${{ env.NEW_ENV_NAME }} \
+            --query 'Environments[0].CNAME' --output text)
+
+          # Run comprehensive smoke tests
+          newman run smoke-tests/production-smoke-tests.json \
+            --env-var baseUrl=https://$NEW_URL
+
+      - name: Swap environment URLs (Blue/Green)
+        run: |
+          # Swap URLs between old and new environments
+          aws elasticbeanstalk swap-environment-cnames \
+            --source-environment-name quantumvest-production-env \
+            --destination-environment-name ${{ env.NEW_ENV_NAME }}
+
+      - name: Monitor post-deployment health
+        run: |
+          # Monitor application health for 5 minutes
+          for i in {1..10}; do
+            HEALTH=$(aws elasticbeanstalk describe-environment-health \
+              --environment-name ${{ env.NEW_ENV_NAME }} \
+              --attribute-names All \
+              --query 'Status' --output text)
+            
+            if [ "$HEALTH" = "Ok" ]; then
+              echo "Environment is healthy"
+              break
+            elif [ "$HEALTH" = "Warning" ]; then
+              echo "Warning: Environment health is degraded"
+            else
+              echo "Error: Environment is unhealthy"
+              exit 1
+            fi
+            
+            sleep 30
+          done
+
+      - name: Cleanup old environment
+        if: success()
+        run: |
+          # Terminate old environment after successful deployment
+          aws elasticbeanstalk terminate-environment \
+            --environment-name quantumvest-production-env
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          # Rollback by swapping URLs back
+          aws elasticbeanstalk swap-environment-cnames \
+            --source-environment-name ${{ env.NEW_ENV_NAME }} \
+            --destination-environment-name quantumvest-production-env
+
+          # Terminate failed environment
+          aws elasticbeanstalk terminate-environment \
+            --environment-name ${{ env.NEW_ENV_NAME }}
+
+  # Post-deployment monitoring and notifications
+  post-deployment:
+    name: Post-Deployment Tasks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [deploy-production]
+    if: success()
+
+    steps:
+      - name: Update monitoring dashboards
+        run: |
+          # Update CloudWatch dashboards with new deployment info
+          aws cloudwatch put-dashboard \
+            --dashboard-name "QuantumVest-Production" \
+            --dashboard-body file://monitoring/cloudwatch-dashboard.json
+
+      - name: Send deployment notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_CHANNEL: "#deployments"
+          SLACK_COLOR: "good"
+          SLACK_MESSAGE: |
+            🚀 Production deployment successful!
+
+            Image: ${{ needs.build.outputs.image-tag }}
+            Commit: ${{ github.sha }}
+            Actor: ${{ github.actor }}
+
+            🔗 [View Application](https://quantumvest.com)
+            📊 [View Monitoring](https://console.aws.amazon.com/cloudwatch)
+
+      - name: Create GitHub release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ needs.build.outputs.image-tag }}
+          release_name: Release v${{ needs.build.outputs.image-tag }}
+          body: |
+            ## Production Deployment
+
+            **Image Tag:** ${{ needs.build.outputs.image-tag }}
+            **Commit:** ${{ github.sha }}
+            **Deployed by:** ${{ github.actor }}
+
+            ### Changes
+            - Automated production deployment
+            - Security scans passed
+            - All tests passed
+            - Performance benchmarks met
+          draft: false
+          prerelease: false

@@ -1,0 +1,67 @@
+services:
+  - type: web
+    name: quantumvest-enterprise
+    env: node
+    region: oregon
+    plan: starter
+    buildCommand: npm run build:production
+    startCommand: npm run start:production
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: GENERATE_SOURCEMAP
+        value: false
+      - key: VITE_APP_NAME
+        value: QuantumVest Enterprise
+      - key: VITE_APP_ENV
+        value: production
+      - key: PORT
+        value: 8080
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-XSS-Protection
+        value: 1; mode=block
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: /api/$1
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    buildFilter:
+      paths:
+        - src/**
+        - public/**
+        - package.json
+        - package-lock.json
+        - vite.config.ts
+        - tsconfig.json
+        - index.html
+      ignorePaths:
+        - "**/*.md"
+        - "**/*.test.*"
+        - "**/*.spec.*"
+        - "**/tests/**"
+        - "**/test/**"
+    scaling:
+      minInstances: 1
+      maxInstances: 10
+      targetMemory: 80
+      targetCPU: 80
+    disk:
+      name: quantumvest-data
+      mountPath: /data
+      sizeGB: 1

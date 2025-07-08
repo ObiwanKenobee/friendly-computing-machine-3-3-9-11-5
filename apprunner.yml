@@ -1,0 +1,84 @@
+version: 1.0
+runtime: nodejs18
+
+source:
+  directory: /
+
+build:
+  commands:
+    pre_build:
+      - echo "🔍 Pre-build validation starting..."
+      - node --version
+      - npm --version
+      - echo "📋 Checking package.json integrity..."
+      - test -f package.json || (echo "❌ package.json not found" && exit 1)
+      - test -f package-lock.json || (echo "⚠�� package-lock.json not found, proceeding with caution" && npm install --package-lock-only)
+      - echo "✅ Pre-build validation complete"
+    build:
+      - echo "🚀 Starting QuantumVest Enterprise build process..."
+      - echo "🧹 Cleaning previous builds and caches..."
+      - rm -rf dist/ || true
+      - rm -rf node_modules/.cache/ || true
+      - rm -rf node_modules/.vite/ || true
+      - echo "📦 Installing dependencies with retry logic..."
+      - npm ci --include=dev --prefer-offline --no-audit || npm ci --include=dev --no-audit || (echo "❌ npm install failed" && exit 1)
+      - echo "🔍 Verifying critical files exist..."
+      - test -f src/components/ui/toaster.tsx || (echo "❌ Toaster component missing" && exit 1)
+      - test -f src/hooks/use-toast.ts || (echo "❌ useToast hook missing" && exit 1)
+      - test -f src/components/ui/toast.tsx || (echo "❌ Toast component missing" && exit 1)
+      - echo "🔧 Rebuilding TypeScript path mapping..."
+      - npx tsc --showConfig > tsconfig.debug.json || true
+      - echo "🔍 Running comprehensive type checks..."
+      - npm run typecheck || (echo "❌ Type checking failed" && exit 1)
+      - echo "🏗️ Building production application with enhanced error handling..."
+      - NODE_ENV=production GENERATE_SOURCEMAP=false npm run build:production || (echo "❌ Build failed" && cat /tmp/build.log && exit 1)
+      - echo "📊 Verifying build output..."
+      - test -d dist/ || (echo "❌ Build output directory not found" && exit 1)
+      - test -f dist/index.html || (echo "❌ Index.html not found in build output" && exit 1)
+      - ls -la dist/
+      - du -sh dist/
+      - echo "🔍 Checking build artifacts..."
+      - find dist/ -name "*.js" -exec du -sh {} \; | head -10
+      - echo "✅ Build completed successfully"
+    post_build:
+      - echo "🔧 Installing production server with fallback..."
+      - npm install -g serve@latest || npm install -g serve@14.2.1 || (echo "❌ Failed to install serve" && exit 1)
+      - echo "🧪 Testing serve installation..."
+      - serve --version || (echo "❌ Serve installation verification failed" && exit 1)
+      - echo "🔍 Final validation..."
+      - test -x "$(command -v serve)" || (echo "❌ Serve command not executable" && exit 1)
+      - echo "📝 Build summary complete - All checks passed ✅"
+
+run:
+  runtime-version: 18
+  commands:
+    web:
+      - echo "🚀 Starting QuantumVest Enterprise server..."
+      - echo "🔍 Environment validation..."
+      - echo "PORT: $PORT"
+      - echo "NODE_ENV: $NODE_ENV"
+      - test -d dist/ || (echo "❌ Dist directory not found" && exit 1)
+      - test -f dist/index.html || (echo "❌ Index.html not found" && exit 1)
+      - echo "✅ Environment validation complete"
+      - echo "🌐 Starting web server on port $PORT..."
+      - serve -s dist -l $PORT --no-clipboard --single --cors || (echo "❌ Server startup failed" && exit 1)
+  network:
+    port: 8080
+    env: PORT
+  env:
+    - name: NODE_ENV
+      value: production
+    - name: PORT
+      value: 8080
+    - name: GENERATE_SOURCEMAP
+      value: false
+    - name: REACT_APP_ENV
+      value: production
+    - name: CI
+      value: true
+    - name: DISABLE_ESLINT_PLUGIN
+      value: true
+    - name: TSC_COMPILE_ON_ERROR
+      value: true
+    - name: SKIP_PREFLIGHT_CHECK
+      value: true

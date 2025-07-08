@@ -1,0 +1,388 @@
+# QuantumVest Enterprise Platform - Load Testing Configuration
+# Comprehensive performance testing under various load conditions
+
+config:
+  target: ${TARGET_URL}
+  phases:
+    # Warm-up phase
+    - duration: 120
+      arrivalRate: 5
+      name: "Warm-up"
+
+    # Gradual ramp-up
+    - duration: 300
+      arrivalRate: 5
+      rampTo: 50
+      name: "Ramp-up"
+
+    # Sustained load
+    - duration: 600
+      arrivalRate: 50
+      name: "Sustained load"
+
+    # Peak load
+    - duration: 300
+      arrivalRate: 50
+      rampTo: 100
+      name: "Peak load"
+
+    # Stress test
+    - duration: 180
+      arrivalRate: 100
+      rampTo: 200
+      name: "Stress test"
+
+    # Cool down
+    - duration: 120
+      arrivalRate: 200
+      rampTo: 5
+      name: "Cool down"
+
+  plugins:
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+
+    publish-metrics:
+      - type: cloudwatch
+        region: us-east-1
+        namespace: "QuantumVest/LoadTest"
+
+    expect:
+      outputFormat: pretty
+
+  variables:
+    userAgents:
+      - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+      - "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+
+    archetypes:
+      - "emerging-market-citizen"
+      - "retail-investor"
+      - "cultural-investor"
+      - "diaspora-investor"
+      - "financial-advisor"
+
+  pool: 25 # Connection pool size
+
+  defaults:
+    headers:
+      User-Agent: "{{ $randomString() }}"
+      Accept: "application/json, text/html, */*"
+      Accept-Encoding: "gzip, deflate, br"
+      Cache-Control: "no-cache"
+
+  processor: "./load-test-processor.js"
+
+before:
+  flow:
+    - log: "Starting QuantumVest load test..."
+    - log: "Target: {{ $environment.TARGET_URL }}"
+
+after:
+  flow:
+    - log: "Load test completed"
+    - function: "generateSummaryReport"
+
+scenarios:
+  # Main user journey flow
+  - name: "User Investment Journey"
+    weight: 40
+    flow:
+      - get:
+          url: "/"
+          name: "Homepage"
+          expect:
+            - statusCode: 200
+            - contentType: text/html
+          capture:
+            - json: "$.title"
+              as: "pageTitle"
+
+      - think: 2
+
+      - get:
+          url: "/archetypes"
+          name: "Archetype Selection"
+          expect:
+            - statusCode: 200
+            - hasProperty: "body"
+
+      - think: 3
+
+      - get:
+          url: "/{{ archetypes.random() }}"
+          name: "Archetype Dashboard"
+          expect:
+            - statusCode: 200
+            - contentType: text/html
+          capture:
+            - regexp: 'data-testid="portfolio-value">\\$([0-9,]+)'
+              as: "portfolioValue"
+
+      - think: 5
+
+      - post:
+          url: "/api/investments/simulate"
+          name: "Simulate Investment"
+          json:
+            amount: 100
+            assetType: "healthcare"
+            riskLevel: "low"
+          expect:
+            - statusCode: [200, 201]
+            - hasProperty: "success"
+          capture:
+            - json: "$.data.transactionId"
+              as: "transactionId"
+
+      - think: 2
+
+      - get:
+          url: "/api/portfolio/summary"
+          name: "Portfolio Summary"
+          expect:
+            - statusCode: 200
+            - hasProperty: "totalValue"
+
+  # API-focused load testing
+  - name: "API Load Test"
+    weight: 30
+    flow:
+      - post:
+          url: "/api/auth/login"
+          name: "API Login"
+          json:
+            email: "test{{ $randomInt(1, 1000) }}@example.com"
+            password: "TestPassword123!"
+          expect:
+            - statusCode: [200, 401]
+          capture:
+            - json: "$.token"
+              as: "authToken"
+              default: "invalid"
+
+      - get:
+          url: "/api/assets/healthcare"
+          name: "Get Healthcare Assets"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: [200, 401]
+
+      - get:
+          url: "/api/market/analytics"
+          name: "Market Analytics"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: [200, 401]
+
+      - post:
+          url: "/api/analytics/track"
+          name: "Analytics Tracking"
+          json:
+            event: "page_view"
+            properties:
+              page: "/{{ archetypes.random() }}"
+              timestamp: "{{ $timestamp() }}"
+          expect:
+            - statusCode: [200, 201]
+
+  # Real-time features testing
+  - name: "Real-time Features"
+    weight: 20
+    engine: ws
+    flow:
+      - connect:
+          target: "ws://{{ $environment.TARGET_WS || 'localhost:3000' }}/ws"
+          name: "WebSocket Connection"
+
+      - send:
+          payload: |
+            {
+              "type": "subscribe",
+              "channel": "portfolio_updates",
+              "userId": "test_{{ $randomInt(1, 1000) }}"
+            }
+          name: "Subscribe to Portfolio Updates"
+
+      - think: 10
+
+      - send:
+          payload: |
+            {
+              "type": "heartbeat",
+              "timestamp": {{ $timestamp() }}
+            }
+          name: "Heartbeat"
+
+      - think: 5
+
+  # Security testing scenarios
+  - name: "Security Load Test"
+    weight: 10
+    flow:
+      # Test rate limiting
+      - loop:
+          count: 20
+          over:
+            - post:
+                url: "/api/auth/login"
+                name: "Rate Limit Test"
+                json:
+                  email: "attacker@example.com"
+                  password: "wrongpassword"
+                expect:
+                  - statusCode: [401, 429]
+
+      # Test input validation
+      - post:
+          url: "/api/investments"
+          name: "Input Validation Test"
+          json:
+            amount: "{{ $randomString() }}"
+            assetType: "<script>alert('xss')</script>"
+          expect:
+            - statusCode: [400, 422]
+
+      # Test SQL injection protection
+      - get:
+          url: "/api/search?q={{ 'OR 1=1--' | urlencode }}"
+          name: "SQL Injection Test"
+          expect:
+            - statusCode: [400, 404]
+
+# Performance expectations and SLA definitions
+expect:
+  # Response time expectations
+  - expression: "response.time < 500"
+    as: "API response time under 500ms"
+    percentage: 95
+
+  - expression: "response.time < 1000"
+    as: "Page load time under 1s"
+    percentage: 90
+
+  - expression: "response.time < 2000"
+    as: "All requests under 2s"
+    percentage: 99
+
+  # Error rate expectations
+  - expression: "response.statusCode >= 200 && response.statusCode < 400"
+    as: "Success rate"
+    percentage: 99.5
+
+  - expression: "response.statusCode != 500"
+    as: "No server errors"
+    percentage: 100
+
+# Custom metrics and reporting
+plugins:
+  custom-metrics:
+    - name: "business_transactions_per_second"
+      expression: "count(response.statusCode == 201 && request.name == 'Simulate Investment')"
+      unit: "tps"
+
+    - name: "authentication_success_rate"
+      expression: "percentage(response.statusCode == 200 && request.name == 'API Login')"
+      unit: "percent"
+
+    - name: "websocket_connection_success"
+      expression: "count(ws.open)"
+      unit: "connections"
+
+    - name: "security_events_blocked"
+      expression: "count(response.statusCode == 429 || response.statusCode == 403)"
+      unit: "events"
+
+# Environment-specific configurations
+environments:
+  development:
+    target: "http://localhost:5173"
+    phases:
+      - duration: 60
+        arrivalRate: 2
+
+  staging:
+    target: "https://staging.quantumvest.com"
+    phases:
+      - duration: 300
+        arrivalRate: 10
+        rampTo: 25
+      - duration: 300
+        arrivalRate: 25
+
+  production:
+    target: "https://quantumvest.com"
+    # Use full configuration defined above
+
+# Monitoring and alerting
+monitoring:
+  cloudwatch:
+    enabled: true
+    metrics:
+      - "response_time_p95"
+      - "error_rate"
+      - "requests_per_second"
+      - "business_transactions_per_second"
+
+    alarms:
+      - metric: "error_rate"
+        threshold: 1.0
+        comparison: "GreaterThanThreshold"
+        action: "stop_test"
+
+      - metric: "response_time_p95"
+        threshold: 2000
+        comparison: "GreaterThanThreshold"
+        action: "alert"
+
+# Load test data generation
+data:
+  users:
+    generator: "faker"
+    count: 1000
+    fields:
+      email: "{{ faker.internet.email() }}"
+      firstName: "{{ faker.name.firstName() }}"
+      lastName: "{{ faker.name.lastName() }}"
+      country: "{{ faker.address.country() }}"
+      investmentAmount: "{{ faker.random.number({min: 100, max: 10000}) }}"
+
+  assets:
+    - name: "Nairobi General Hospital Expansion"
+      type: "healthcare"
+      risk: "low"
+      expectedReturn: 6.5
+
+    - name: "Lagos Tech Innovation Fund"
+      type: "technology"
+      risk: "high"
+      expectedReturn: 15.2
+
+    - name: "Accra Cultural Heritage Project"
+      type: "cultural"
+      risk: "medium"
+      expectedReturn: 9.8
+
+# Reporting configuration
+reporting:
+  output: "./load-test-results"
+  formats:
+    - "json"
+    - "html"
+    - "csv"
+
+  include:
+    - "summary"
+    - "latency_distribution"
+    - "error_breakdown"
+    - "custom_metrics"
+    - "sla_compliance"
+
+  thresholds:
+    response_time_p95: 1000
+    response_time_p99: 2000
+    error_rate: 1.0
+    throughput_minimum: 100

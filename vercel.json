@@ -1,0 +1,102 @@
+{
+  "version": 2,
+  "name": "quantumvest-platform",
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "https://quantum-api-gateway.quantumvest.com/api/v1/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ],
+  "env": {
+    "VITE_API_BASE_URL": "https://quantum-api-gateway.quantumvest.com",
+    "VITE_QUANTUM_ALGEBRA_URL": "https://quantum-api-gateway.quantumvest.com/api/v1/algebra",
+    "VITE_QUANTUM_SCHEDULER_URL": "https://quantum-api-gateway.quantumvest.com/api/v1/scheduler",
+    "VITE_QUANTUM_ERROR_CORRECTION_URL": "https://quantum-api-gateway.quantumvest.com/api/v1/error-correction",
+    "VITE_QUANTUM_INTERFACE_URL": "https://quantum-api-gateway.quantumvest.com/api/v1/interface",
+    "VITE_QUANTUM_ML_URL": "https://quantum-api-gateway.quantumvest.com/api/v1/ml",
+    "VITE_APP_ENVIRONMENT": "production",
+    "VITE_ENABLE_QUANTUM_FEATURES": "true",
+    "VITE_MAX_QUBITS": "20",
+    "VITE_ENABLE_ERROR_CORRECTION": "true",
+    "VITE_ENABLE_VQC_TRAINING": "true"
+  },
+  "build": {
+    "env": {
+      "NODE_ENV": "production"
+    }
+  },
+  "functions": {
+    "app/api/health.js": {
+      "runtime": "nodejs18.x"
+    }
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, PUT, DELETE, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "X-Requested-With, Content-Type, Authorization"
+        }
+      ]
+    },
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Content-Security-Policy",
+          "value": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://quantum-api-gateway.quantumvest.com wss:"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/quantum/(.*)",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/dashboard/(.*)",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/auth/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "cleanUrls": true,
+  "trailingSlash": false
+}

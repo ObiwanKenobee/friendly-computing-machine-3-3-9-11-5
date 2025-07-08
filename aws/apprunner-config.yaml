@@ -1,0 +1,93 @@
+# AWS App Runner Configuration for QuantumVest Production
+# Optimized for performance, cost, and scalability
+
+version: 1.0
+runtime: nodejs18
+
+build:
+  commands:
+    build:
+      - echo "Installing dependencies..."
+      - npm ci --include=dev --prefer-offline --no-audit
+      - echo "Running type checking..."
+      - npm run typecheck
+      - echo "Building production application..."
+      - NODE_ENV=production GENERATE_SOURCEMAP=false npm run build:production
+      - echo "Installing production serve..."
+      - npm install -g serve@latest
+      - echo "Build completed successfully"
+    post_build:
+      - echo "Preparing production package..."
+      - ls -la dist/
+      - du -sh dist/
+
+run:
+  runtime-version: 18
+  commands:
+    web:
+      - serve -s dist -l 8080 --no-clipboard --single
+  network:
+    port: 8080
+    env: PORT
+  env:
+    - name: NODE_ENV
+      value: production
+    - name: PORT
+      value: 8080
+
+# Auto Scaling Configuration
+auto_scaling:
+  min_size: 1
+  max_size: 10
+  max_concurrency: 100
+  min_concurrency: 1
+  target_cpu: 70
+  target_memory: 70
+
+# Health Check
+health_check:
+  protocol: HTTP
+  path: /
+  interval: 15
+  timeout: 5
+  healthy_threshold: 2
+  unhealthy_threshold: 5
+
+# Network Configuration
+network:
+  ingress:
+    is_publicly_accessible: true
+  egress:
+    - protocol: TCP
+      port: 443
+      description: "HTTPS outbound"
+    - protocol: TCP
+      port: 80
+      description: "HTTP outbound"
+
+# Instance Configuration
+instance:
+  cpu: "0.25 vCPU" # Start small, auto-scale up
+  memory: "0.5 GB"
+
+# Encryption
+encryption:
+  kms_key: alias/aws/apprunner
+
+# Observability
+observability:
+  x_ray_tracing: true
+  configuration_source: REPOSITORY
+
+# Tags
+tags:
+  - key: Project
+    value: QuantumVest
+  - key: Environment
+    value: Production
+  - key: Owner
+    value: Platform-Team
+  - key: CostCenter
+    value: Engineering
+  - key: Backup
+    value: Required

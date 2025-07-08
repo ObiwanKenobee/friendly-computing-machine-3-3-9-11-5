@@ -1,0 +1,971 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: quantum-cloud
+  labels:
+    name: quantum-cloud
+    purpose: quantum-computing-platform
+
+---
+# ConfigMap for quantum services configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quantum-config
+  namespace: quantum-cloud
+data:
+  redis_url: "redis://quantum-redis:6379"
+  postgres_host: "quantum-postgres"
+  postgres_port: "5432"
+  postgres_db: "quantumdb"
+  log_level: "INFO"
+  max_qubits: "20"
+  simulation_timeout: "3600"
+  error_correction_enabled: "true"
+  quantum_volume_threshold: "64"
+
+---
+# Secret for database credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: quantum-secrets
+  namespace: quantum-cloud
+type: Opaque
+data:
+  postgres_user: cXVhbnR1bXVzZXI= # quantumuser (base64)
+  postgres_password: cXVhbnR1bXBhc3M= # quantumpass (base64)
+  redis_password: cmVkaXNxdWFudHVt # redisquantum (base64)
+  jwt_secret: and1YW50dW1qd3RzZWNyZXQ= # quantumjwtsecret (base64)
+
+---
+# PostgreSQL StatefulSet for quantum database
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: quantum-postgres
+  namespace: quantum-cloud
+spec:
+  serviceName: quantum-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quantum-postgres
+  template:
+    metadata:
+      labels:
+        app: quantum-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: postgres_db
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_password
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+            - name: postgres-init
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+      volumes:
+        - name: postgres-init
+          configMap:
+            name: postgres-init-scripts
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 100Gi
+        storageClassName: fast-ssd
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-postgres
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None
+
+---
+# Redis Deployment for quantum circuit caching
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantum-redis
+  namespace: quantum-cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: quantum-redis
+  template:
+    metadata:
+      labels:
+        app: quantum-redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          command:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            - --maxmemory
+            - 4gb
+            - --maxmemory-policy
+            - allkeys-lru
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: redis_password
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: redis-storage
+              mountPath: /data
+      volumes:
+        - name: redis-storage
+          emptyDir: {}
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-redis
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+
+---
+# Quantum Linear Algebra Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantum-algebra-service
+  namespace: quantum-cloud
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: quantum-algebra-service
+  template:
+    metadata:
+      labels:
+        app: quantum-algebra-service
+    spec:
+      nodeSelector:
+        workload-type: quantum-simulation
+      tolerations:
+        - key: quantum-simulation
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: quantum-algebra
+          image: quantumvest/quantum-algebra:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: redis_url
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: log_level
+            - name: MAX_QUBITS
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: max_qubits
+          resources:
+            requests:
+              memory: "16Gi"
+              cpu: "4000m"
+            limits:
+              memory: "32Gi"
+              cpu: "8000m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+# Quantum Scheduler Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantum-scheduler-service
+  namespace: quantum-cloud
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: quantum-scheduler-service
+  template:
+    metadata:
+      labels:
+        app: quantum-scheduler-service
+    spec:
+      serviceAccountName: quantum-scheduler
+      containers:
+        - name: quantum-scheduler
+          image: quantumvest/quantum-scheduler:latest
+          ports:
+            - containerPort: 8081
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: redis_url
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: postgres_host
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_password
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+          volumeMounts:
+            - name: kubeconfig
+              mountPath: /root/.kube
+              readOnly: true
+      volumes:
+        - name: kubeconfig
+          secret:
+            secretName: quantum-scheduler-kubeconfig
+
+---
+# Quantum Error Correction Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantum-error-correction-service
+  namespace: quantum-cloud
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: quantum-error-correction-service
+  template:
+    metadata:
+      labels:
+        app: quantum-error-correction-service
+    spec:
+      containers:
+        - name: quantum-error-correction
+          image: quantumvest/quantum-error-correction:latest
+          ports:
+            - containerPort: 8082
+          env:
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: postgres_host
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_password
+            - name: ERROR_CORRECTION_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: error_correction_enabled
+          resources:
+            requests:
+              memory: "4Gi"
+              cpu: "2000m"
+            limits:
+              memory: "8Gi"
+              cpu: "4000m"
+
+---
+# Quantum-Classical Interface Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantum-classical-interface-service
+  namespace: quantum-cloud
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: quantum-classical-interface-service
+  template:
+    metadata:
+      labels:
+        app: quantum-classical-interface-service
+    spec:
+      containers:
+        - name: quantum-classical-interface
+          image: quantumvest/quantum-classical-interface:latest
+          ports:
+            - containerPort: 8083
+          env:
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: log_level
+          resources:
+            requests:
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+
+---
+# Quantum ML Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantum-ml-service
+  namespace: quantum-cloud
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: quantum-ml-service
+  template:
+    metadata:
+      labels:
+        app: quantum-ml-service
+    spec:
+      nodeSelector:
+        node-class: gpu-accelerated
+      containers:
+        - name: quantum-ml
+          image: quantumvest/quantum-ml:latest
+          ports:
+            - containerPort: 8084
+          env:
+            - name: REDIS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: redis_url
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: quantum-config
+                  key: postgres_host
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: quantum-secrets
+                  key: postgres_password
+          resources:
+            requests:
+              memory: "8Gi"
+              cpu: "4000m"
+              nvidia.com/gpu: 1
+            limits:
+              memory: "16Gi"
+              cpu: "8000m"
+              nvidia.com/gpu: 1
+
+---
+# Services for quantum microservices
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-algebra-service
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-algebra-service
+  ports:
+    - port: 8080
+      targetPort: 8080
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-scheduler-service
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-scheduler-service
+  ports:
+    - port: 8081
+      targetPort: 8081
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-error-correction-service
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-error-correction-service
+  ports:
+    - port: 8082
+      targetPort: 8082
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-classical-interface-service
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-classical-interface-service
+  ports:
+    - port: 8083
+      targetPort: 8083
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-ml-service
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-ml-service
+  ports:
+    - port: 8084
+      targetPort: 8084
+  type: ClusterIP
+
+---
+# API Gateway for quantum services
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: quantum-api-gateway
+  namespace: quantum-cloud
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: quantum-api-gateway
+  template:
+    metadata:
+      labels:
+        app: quantum-api-gateway
+    spec:
+      containers:
+        - name: api-gateway
+          image: nginx:alpine
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: quantum-api-gateway-config
+
+---
+# API Gateway Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: quantum-api-gateway
+  namespace: quantum-cloud
+spec:
+  selector:
+    app: quantum-api-gateway
+  ports:
+    - port: 80
+      targetPort: 80
+  type: LoadBalancer
+
+---
+# ConfigMap for API Gateway
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quantum-api-gateway-config
+  namespace: quantum-cloud
+data:
+  default.conf: |
+    upstream quantum_algebra {
+        server quantum-algebra-service:8080;
+    }
+
+    upstream quantum_scheduler {
+        server quantum-scheduler-service:8081;
+    }
+
+    upstream quantum_error_correction {
+        server quantum-error-correction-service:8082;
+    }
+
+    upstream quantum_classical_interface {
+        server quantum-classical-interface-service:8083;
+    }
+
+    upstream quantum_ml {
+        server quantum-ml-service:8084;
+    }
+
+    server {
+        listen 80;
+        server_name quantum-api;
+        
+        # Enable gzip compression
+        gzip on;
+        gzip_types text/plain application/json application/javascript text/css text/xml;
+        
+        # Rate limiting
+        limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+        
+        # Quantum algebra service
+        location /api/v1/algebra/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://quantum_algebra/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_timeout 300s;
+        }
+        
+        # Quantum scheduler service
+        location /api/v1/scheduler/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://quantum_scheduler/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_timeout 300s;
+        }
+        
+        # Error correction service
+        location /api/v1/error-correction/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://quantum_error_correction/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_timeout 300s;
+        }
+        
+        # Quantum-classical interface
+        location /api/v1/interface/ {
+            limit_req zone=api burst=20 nodelay;
+            proxy_pass http://quantum_classical_interface/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_timeout 300s;
+        }
+        
+        # Quantum ML service
+        location /api/v1/ml/ {
+            limit_req zone=api burst=5 nodelay;  # Lower rate for ML
+            proxy_pass http://quantum_ml/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_timeout 3600s;  # Longer timeout for ML training
+        }
+        
+        # Health check endpoint
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Metrics endpoint
+        location /metrics {
+            stub_status on;
+            access_log off;
+        }
+    }
+
+---
+# ServiceAccount for quantum scheduler
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: quantum-scheduler
+  namespace: quantum-cloud
+
+---
+# ClusterRole for quantum scheduler
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: quantum-scheduler
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# ClusterRoleBinding for quantum scheduler
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: quantum-scheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: quantum-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: quantum-scheduler
+    namespace: quantum-cloud
+
+---
+# HorizontalPodAutoscaler for quantum services
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: quantum-algebra-hpa
+  namespace: quantum-cloud
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: quantum-algebra-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: quantum-ml-hpa
+  namespace: quantum-cloud
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: quantum-ml-service
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+---
+# NetworkPolicy for quantum services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: quantum-network-policy
+  namespace: quantum-cloud
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: quantum-cloud
+        - podSelector: {}
+    - from: []
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: quantum-cloud
+        - podSelector: {}
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 5432 # PostgreSQL
+        - protocol: TCP
+          port: 6379 # Redis
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53 # DNS
+
+---
+# PodDisruptionBudget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: quantum-services-pdb
+  namespace: quantum-cloud
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: quantum-algebra-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: quantum-scheduler-pdb
+  namespace: quantum-cloud
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: quantum-scheduler-service
+
+---
+# StorageClass for quantum data
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast-ssd
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp3
+  iops: "10000"
+  throughput: "500"
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# ConfigMap for PostgreSQL initialization
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+  namespace: quantum-cloud
+data:
+  init.sql: |
+    -- Enable required extensions
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "vector";
+
+    -- Create quantum database schema
+    -- (The full schema would be loaded from quantum_schema.sql)
+
+    -- Create initial quantum gates
+    CREATE TABLE IF NOT EXISTS quantum_gates (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        gate_name VARCHAR(100) NOT NULL,
+        gate_symbol VARCHAR(20) NOT NULL,
+        num_qubits INTEGER NOT NULL CHECK (num_qubits > 0),
+        gate_matrix_real vector(16),
+        gate_matrix_imag vector(16),
+        gate_type VARCHAR(50),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    );
+
+    -- Grant permissions
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO quantumuser;
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO quantumuser;
+
+---
+# Monitoring ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: quantum-monitoring-config
+  namespace: quantum-cloud
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    rule_files:
+      - "quantum_alerts.yml"
+
+    scrape_configs:
+      - job_name: 'quantum-services'
+        kubernetes_sd_configs:
+        - role: pod
+          namespaces:
+            names:
+            - quantum-cloud
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+          action: replace
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+          target_label: __address__
+        - action: labelmap
+          regex: __meta_kubernetes_pod_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_pod_name]
+          action: replace
+          target_label: kubernetes_pod_name
+
+  quantum_alerts.yml: |
+    groups:
+    - name: quantum.rules
+      rules:
+      - alert: QuantumServiceDown
+        expr: up{job="quantum-services"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Quantum service {{ $labels.instance }} is down"
+          description: "Quantum service {{ $labels.instance }} has been down for more than 1 minute."
+      
+      - alert: QuantumHighLatency
+        expr: quantum_request_duration_seconds{quantile="0.95"} > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency on quantum service {{ $labels.instance }}"
+          description: "95th percentile latency is {{ $value }}s on {{ $labels.instance }}."
+      
+      - alert: QuantumErrorRateHigh
+        expr: rate(quantum_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on quantum service {{ $labels.instance }}"
+          description: "Error rate is {{ $value }} errors/sec on {{ $labels.instance }}."

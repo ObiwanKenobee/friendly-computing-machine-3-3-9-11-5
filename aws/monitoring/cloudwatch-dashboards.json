@@ -1,0 +1,232 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/ApplicationELB",
+            "RequestCount",
+            "LoadBalancer",
+            "production-quantumvest-alb"
+          ],
+          [".", "TargetResponseTime", ".", "."],
+          [".", "HTTPCode_Target_2XX_Count", ".", "."],
+          [".", "HTTPCode_Target_4XX_Count", ".", "."],
+          [".", "HTTPCode_Target_5XX_Count", ".", "."]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "Application Load Balancer Metrics",
+        "view": "timeSeries",
+        "stacked": false
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/ECS",
+            "CPUUtilization",
+            "ServiceName",
+            "production-quantumvest-service",
+            "ClusterName",
+            "production-quantumvest-cluster"
+          ],
+          [".", "MemoryUtilization", ".", ".", ".", "."],
+          [".", "RunningTaskCount", ".", ".", ".", "."]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "ECS Service Metrics",
+        "view": "timeSeries",
+        "stacked": false
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/RDS",
+            "CPUUtilization",
+            "DBInstanceIdentifier",
+            "production-quantumvest-db"
+          ],
+          [".", "DatabaseConnections", ".", "."],
+          [".", "FreeableMemory", ".", "."],
+          [".", "ReadLatency", ".", "."],
+          [".", "WriteLatency", ".", "."]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "RDS Database Metrics",
+        "view": "timeSeries",
+        "stacked": false
+      }
+    },
+    {
+      "type": "metric",
+      "x": 8,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/ElastiCache",
+            "CPUUtilization",
+            "CacheClusterId",
+            "production-quantumvest-redis-001"
+          ],
+          [".", "NetworkBytesIn", ".", "."],
+          [".", "NetworkBytesOut", ".", "."],
+          [".", "CurrConnections", ".", "."]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "ElastiCache Redis Metrics",
+        "view": "timeSeries",
+        "stacked": false
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          ["AWS/CloudFront", "Requests", "DistributionId", "EXAMPLE123456789"],
+          [".", "BytesDownloaded", ".", "."],
+          [".", "4xxErrorRate", ".", "."],
+          [".", "5xxErrorRate", ".", "."],
+          [".", "OriginLatency", ".", "."]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "CloudFront Distribution Metrics",
+        "view": "timeSeries",
+        "stacked": false
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 12,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "query": "SOURCE '/ecs/production-quantumvest'\n| fields @timestamp, @message\n| filter @message like /ERROR/\n| sort @timestamp desc\n| limit 100",
+        "region": "us-east-1",
+        "title": "Recent Application Errors",
+        "view": "table"
+      }
+    },
+    {
+      "type": "number",
+      "x": 0,
+      "y": 18,
+      "width": 6,
+      "height": 3,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/ApplicationELB",
+            "TargetResponseTime",
+            "LoadBalancer",
+            "production-quantumvest-alb"
+          ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Average Response Time (ms)"
+      }
+    },
+    {
+      "type": "number",
+      "x": 6,
+      "y": 18,
+      "width": 6,
+      "height": 3,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/ECS",
+            "RunningTaskCount",
+            "ServiceName",
+            "production-quantumvest-service",
+            "ClusterName",
+            "production-quantumvest-cluster"
+          ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Running Tasks"
+      }
+    },
+    {
+      "type": "number",
+      "x": 12,
+      "y": 18,
+      "width": 6,
+      "height": 3,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/RDS",
+            "DatabaseConnections",
+            "DBInstanceIdentifier",
+            "production-quantumvest-db"
+          ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Database Connections"
+      }
+    },
+    {
+      "type": "number",
+      "x": 18,
+      "y": 18,
+      "width": 6,
+      "height": 3,
+      "properties": {
+        "metrics": [
+          [
+            "AWS/ElastiCache",
+            "CurrConnections",
+            "CacheClusterId",
+            "production-quantumvest-redis-001"
+          ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Redis Connections"
+      }
+    }
+  ]
+}

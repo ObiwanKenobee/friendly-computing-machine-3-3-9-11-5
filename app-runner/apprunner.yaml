@@ -1,0 +1,29 @@
+# AWS App Runner configuration for Quantum Service Lite
+version: 1.0
+runtime: python3
+build:
+  commands:
+    build:
+      - echo "Installing dependencies"
+      - pip install --upgrade pip
+      - pip install -r requirements.txt
+      - echo "Build completed"
+run:
+  runtime-version: 3.11
+  command: python app.py
+  network:
+    port: 8080
+    env: PORT
+  env:
+    - name: PORT
+      value: "8080"
+    - name: PYTHONUNBUFFERED
+      value: "1"
+    - name: LOG_LEVEL
+      value: "INFO"
+    - name: MAX_QUBITS
+      value: "12"
+    - name: MAX_SHOTS
+      value: "10000"
+    - name: ENVIRONMENT
+      value: "production"

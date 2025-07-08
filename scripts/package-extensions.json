@@ -1,0 +1,67 @@
+{
+  "scripts": {
+    "deploy:hobby": "DEPLOYMENT_PLAN=hobby ./scripts/deploy-hobby-optimized.sh",
+    "deploy:pro": "DEPLOYMENT_PLAN=pro ./scripts/deploy-hobby-optimized.sh",
+    "deploy:enterprise": "DEPLOYMENT_PLAN=enterprise ./scripts/deploy-hobby-optimized.sh",
+    "deploy:auto": "./scripts/deploy-hobby-optimized.sh",
+    "build:hobby": "VITE_DEPLOYMENT_PLAN=hobby npm run build:production",
+    "build:pro": "VITE_DEPLOYMENT_PLAN=pro npm run build:production",
+    "build:enterprise": "VITE_DEPLOYMENT_PLAN=enterprise npm run build:production",
+    "monitor:hobby": "./scripts/hobby-monitor.sh",
+    "check:deployment": "node scripts/check-deployment-plan.js",
+    "upgrade:pro": "node scripts/upgrade-to-pro.js",
+    "upgrade:enterprise": "node scripts/upgrade-to-enterprise.js",
+    "optimize:hobby": "node scripts/optimize-for-hobby.js",
+    "analyze:costs": "node scripts/analyze-deployment-costs.js",
+    "test:edge-functions": "node scripts/test-edge-functions.js",
+    "validate:hobby-limits": "node scripts/validate-hobby-limits.js"
+  },
+  "config": {
+    "deployment": {
+      "hobby": {
+        "regions": ["us-east-1"],
+        "maxFunctions": 12,
+        "maxBandwidth": "100GB",
+        "maxExecutions": 1000000,
+        "edgeFunctions": true,
+        "customDomains": false
+      },
+      "pro": {
+        "regions": ["us-east-1", "us-west-2", "eu-west-1"],
+        "maxFunctions": 100,
+        "maxBandwidth": "1TB",
+        "maxExecutions": 10000000,
+        "edgeFunctions": true,
+        "customDomains": true
+      },
+      "enterprise": {
+        "regions": ["all"],
+        "maxFunctions": "unlimited",
+        "maxBandwidth": "unlimited",
+        "maxExecutions": "unlimited",
+        "edgeFunctions": true,
+        "customDomains": true
+      }
+    },
+    "optimization": {
+      "hobby": {
+        "bundleSize": "aggressive",
+        "caching": "aggressive",
+        "compression": "maximum",
+        "treeShaking": "strict"
+      },
+      "pro": {
+        "bundleSize": "balanced",
+        "caching": "balanced",
+        "compression": "standard",
+        "treeShaking": "balanced"
+      },
+      "enterprise": {
+        "bundleSize": "performance",
+        "caching": "performance",
+        "compression": "smart",
+        "treeShaking": "optimal"
+      }
+    }
+  }
+}

@@ -1,0 +1,67 @@
+# QuantumVest Enterprise - Production Dockerfile
+# Multi-stage build for optimized production deployment
+
+# Build stage
+FROM node:18-alpine AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production --silent
+
+# Copy source code
+COPY . .
+
+# Build application
+ENV NODE_ENV=production
+ENV GENERATE_SOURCEMAP=false
+RUN npm run build:production
+
+# Production stage
+FROM nginx:alpine AS production
+
+# Install Node.js for health checks
+RUN apk add --no-cache nodejs npm
+
+# Copy nginx configuration
+COPY nginx/nginx.production.conf /etc/nginx/conf.d/default.conf
+
+# Copy built application
+COPY --from=builder /app/dist /var/www/quantumvest/dist
+
+# Copy health check script
+COPY scripts/health-check.sh /usr/local/bin/health-check.sh
+RUN chmod +x /usr/local/bin/health-check.sh
+
+# Create nginx user and set permissions
+RUN addgroup -g 1001 -S quantumvest && \
+    adduser -S quantumvest -u 1001 -G quantumvest && \
+    chown -R quantumvest:quantumvest /var/www/quantumvest && \
+    chown -R quantumvest:quantumvest /var/cache/nginx && \
+    chown -R quantumvest:quantumvest /var/log/nginx && \
+    chown -R quantumvest:quantumvest /etc/nginx/conf.d && \
+    touch /var/run/nginx.pid && \
+    chown -R quantumvest:quantumvest /var/run/nginx.pid
+
+# Switch to non-root user
+USER quantumvest
+
+# Expose port
+EXPOSE 80 443
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD /usr/local/bin/health-check.sh
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]
+
+# Metadata
+LABEL maintainer="QuantumVest Enterprise Team"
+LABEL version="2.1.0"
+LABEL description="QuantumVest Enterprise Investment Platform"
+LABEL org.opencontainers.image.source="https://github.com/quantumvest/enterprise-platform"

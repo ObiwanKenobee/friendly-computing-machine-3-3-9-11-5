@@ -1,0 +1,33 @@
+User-agent: *
+Allow: /
+
+User-agent: Googlebot
+Allow: /
+Crawl-delay: 1
+
+User-agent: Bingbot
+Allow: /
+Crawl-delay: 2
+
+User-agent: BadBot
+Disallow: /
+
+User-agent: *
+Disallow: /admin/
+Disallow: /api/private/
+Disallow: /_next/
+Disallow: /tmp/
+Disallow: /.git/
+Disallow: /node_modules/
+
+# Allow important files
+Allow: /api/public/
+Allow: /assets/
+Allow: /images/
+Allow: /styles/
+
+Host: https://quantumvest.com
+
+Sitemap: https://quantumvest.com/sitemap.xml
+Sitemap: https://quantumvest.com/sitemap-images.xml
+Sitemap: https://quantumvest.com/sitemap-news.xml

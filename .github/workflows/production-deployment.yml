@@ -1,0 +1,581 @@
+# QuantumVest Enterprise Production Deployment Pipeline
+# Complete CI/CD with testing, security, performance, and deployment
+
+name: Production Deployment
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+env:
+  NODE_VERSION: "18.19.0"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  AWS_REGION: us-east-1
+
+jobs:
+  # ============================================================================
+  # CODE QUALITY & SECURITY
+  # ============================================================================
+
+  code-quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --include=dev --prefer-offline --no-audit
+
+      - name: Lint code
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Security audit
+        run: npm run security:audit
+        continue-on-error: true
+
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: CodeQL Analysis
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+
+  # ============================================================================
+  # TESTING SUITE
+  # ============================================================================
+
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      matrix:
+        test-type: [unit, integration, e2e]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --include=dev --prefer-offline --no-audit
+
+      - name: Run unit tests
+        if: matrix.test-type == 'unit'
+        run: npm run test:coverage
+
+      - name: Run integration tests
+        if: matrix.test-type == 'integration'
+        run: npm run test:integration
+        env:
+          TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+          TEST_REDIS_URL: ${{ secrets.TEST_REDIS_URL }}
+
+      - name: Install Playwright
+        if: matrix.test-type == 'e2e'
+        run: npx playwright install --with-deps
+
+      - name: Run E2E tests
+        if: matrix.test-type == 'e2e'
+        run: npm run test:e2e
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.test-type }}
+          path: |
+            coverage/
+            test-results/
+            playwright-report/
+          retention-days: 7
+
+      - name: Upload coverage to Codecov
+        if: matrix.test-type == 'unit'
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          fail_ci_if_error: true
+
+  # ============================================================================
+  # BUILD & PERFORMANCE
+  # ============================================================================
+
+  build:
+    name: Build & Performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [code-quality, test]
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+      bundle-size: ${{ steps.bundle-analysis.outputs.size }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --include=dev --prefer-offline --no-audit
+
+      - name: Build application
+        run: npm run build:production
+        env:
+          VITE_APP_ENV: production
+          VITE_SITE_URL: https://quantumvest.app
+          GENERATE_SOURCEMAP: false
+
+      - name: Bundle size analysis
+        id: bundle-analysis
+        run: |
+          npm run performance:bundle-size
+          BUNDLE_SIZE=$(du -sh dist | cut -f1)
+          echo "size=$BUNDLE_SIZE" >> $GITHUB_OUTPUT
+          echo "Bundle size: $BUNDLE_SIZE"
+
+      - name: Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v10
+        with:
+          configPath: "./.lighthouserc.js"
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.production
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            dist/
+            docker-compose.production.yml
+            aws/
+          retention-days: 30
+
+  # ============================================================================
+  # SECURITY SCANNING
+  # ============================================================================
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.build.outputs.image-tag }}
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: "trivy-results.sarif"
+
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: "https://quantumvest-staging.app"
+          rules_file_name: ".zap/rules.tsv"
+          cmd_options: "-a"
+
+  # ============================================================================
+  # STAGING DEPLOYMENT
+  # ============================================================================
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build, security]
+    if: github.ref == 'refs/heads/main'
+
+    environment:
+      name: staging
+      url: https://staging.quantumvest.app
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./
+
+      - name: Deploy to staging
+        run: |
+          chmod +x scripts/deploy-aws-production.sh
+          ENVIRONMENT=staging ./scripts/deploy-aws-production.sh
+        env:
+          CERTIFICATE_ARN: ${{ secrets.STAGING_CERTIFICATE_ARN }}
+          DOMAIN_NAME: staging.quantumvest.app
+          OPENAI_API_KEY: ${{ secrets.STAGING_OPENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+
+      - name: Wait for deployment
+        run: |
+          echo "Waiting for staging deployment to be ready..."
+          for i in {1..30}; do
+            if curl -f https://staging.quantumvest.app/api/health; then
+              echo "Staging deployment successful!"
+              exit 0
+            fi
+            echo "Attempt $i/30 failed, waiting 10 seconds..."
+            sleep 10
+          done
+          echo "Staging deployment failed!"
+          exit 1
+
+      - name: Run smoke tests
+        run: |
+          npm ci --include=dev
+          npm run test:smoke
+        env:
+          SMOKE_TEST_URL: https://staging.quantumvest.app
+
+  # ============================================================================
+  # PRODUCTION DEPLOYMENT
+  # ============================================================================
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [deploy-staging]
+    if: github.event_name == 'release' && github.event.action == 'published'
+
+    environment:
+      name: production
+      url: https://quantumvest.app
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./
+
+      - name: Blue-Green Deployment
+        run: |
+          chmod +x scripts/deploy-aws-production.sh
+          ENVIRONMENT=production ./scripts/deploy-aws-production.sh
+        env:
+          CERTIFICATE_ARN: ${{ secrets.PRODUCTION_CERTIFICATE_ARN }}
+          DOMAIN_NAME: quantumvest.app
+          OPENAI_API_KEY: ${{ secrets.PRODUCTION_OPENAI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.PRODUCTION_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.PRODUCTION_SUPABASE_ANON_KEY }}
+
+      - name: Health check
+        run: |
+          echo "Performing production health check..."
+          for i in {1..60}; do
+            if curl -f https://quantumvest.app/api/health; then
+              echo "Production deployment successful!"
+              break
+            fi
+            echo "Health check $i/60 failed, waiting 10 seconds..."
+            sleep 10
+            if [ $i -eq 60 ]; then
+              echo "Production deployment failed health check!"
+              exit 1
+            fi
+          done
+
+      - name: Performance validation
+        run: |
+          npm ci --include=dev
+          npm run performance:lighthouse
+        env:
+          LIGHTHOUSE_URL: https://quantumvest.app
+
+      - name: Notify deployment success
+        uses: 8398a7/action-slack@v3
+        with:
+          status: success
+          channel: "#deployments"
+          text: "🚀 QuantumVest Enterprise v${{ github.event.release.tag_name }} deployed to production!"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ============================================================================
+  # POST-DEPLOYMENT MONITORING
+  # ============================================================================
+
+  post-deployment:
+    name: Post-Deployment Monitoring
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [deploy-production]
+    if: always() && needs.deploy-production.result == 'success'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup monitoring
+        run: |
+          # Set up CloudWatch alarms
+          aws cloudwatch put-metric-alarm \
+            --alarm-name "QuantumVest-Production-HighErrorRate" \
+            --alarm-description "High error rate in production" \
+            --metric-name "4XXHttpResponseCount" \
+            --namespace "AWS/AppRunner" \
+            --statistic "Sum" \
+            --period 300 \
+            --threshold 50 \
+            --comparison-operator "GreaterThanThreshold" \
+            --evaluation-periods 2 \
+            --alarm-actions "${{ secrets.SNS_ALARM_TOPIC_ARN }}"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+
+      - name: Wait and monitor
+        run: |
+          echo "Monitoring production deployment for 30 minutes..."
+          for i in {1..180}; do
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" https://quantumvest.app/api/health)
+            if [ "$RESPONSE" != "200" ]; then
+              echo "Health check failed with status $RESPONSE at $(date)"
+              exit 1
+            fi
+            echo "Health check $i/180 passed"
+            sleep 10
+          done
+          echo "Production monitoring completed successfully!"
+
+  # ============================================================================
+  # ROLLBACK CAPABILITY
+  # ============================================================================
+
+  rollback:
+    name: Emergency Rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: failure() && needs.deploy-production.result == 'failure'
+    needs: [deploy-production]
+
+    environment:
+      name: production-rollback
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Rollback deployment
+        run: |
+          echo "Initiating emergency rollback..."
+
+          # Get previous stable version
+          PREVIOUS_VERSION=$(aws apprunner list-services \
+            --query 'ServiceSummaryList[?ServiceName==`production-quantumvest-app`].ServiceArn' \
+            --output text)
+
+          # Trigger rollback
+          aws apprunner start-deployment \
+            --service-arn "$PREVIOUS_VERSION"
+
+          echo "Rollback initiated. Monitoring..."
+
+          # Wait for rollback to complete
+          for i in {1..30}; do
+            STATUS=$(aws apprunner describe-service \
+              --service-arn "$PREVIOUS_VERSION" \
+              --query 'Service.Status' \
+              --output text)
+            
+            if [ "$STATUS" = "RUNNING" ]; then
+              echo "Rollback completed successfully!"
+              break
+            fi
+            echo "Rollback status: $STATUS (attempt $i/30)"
+            sleep 10
+          done
+
+      - name: Notify rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: "#critical-alerts"
+          text: "🚨 EMERGENCY: QuantumVest production deployment failed and has been rolled back!"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ============================================================================
+  # CLEANUP
+  # ============================================================================
+
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy-production, post-deployment]
+    if: always()
+
+    steps:
+      - name: Clean up old artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: artifacts } = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+
+            // Keep only the 10 most recent artifacts
+            const oldArtifacts = artifacts.artifacts
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+              .slice(10);
+
+            for (const artifact of oldArtifacts) {
+              await github.rest.actions.deleteArtifact({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                artifact_id: artifact.id
+              });
+              console.log(`Deleted artifact: ${artifact.name}`);
+            }
+
+      - name: Clean up old Docker images
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: packages } = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
+              package_type: 'container',
+              package_name: context.repo.repo,
+              org: context.repo.owner,
+              per_page: 100
+            });
+
+            // Keep only the 20 most recent versions
+            const oldVersions = packages
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+              .slice(20);
+
+            for (const version of oldVersions) {
+              await github.rest.packages.deletePackageVersionForOrg({
+                package_type: 'container',
+                package_name: context.repo.repo,
+                org: context.repo.owner,
+                package_version_id: version.id
+              });
+              console.log(`Deleted package version: ${version.name}`);
+            }

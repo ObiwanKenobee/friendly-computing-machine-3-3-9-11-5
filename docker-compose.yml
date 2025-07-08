@@ -1,0 +1,319 @@
+# Docker Compose for QuantumVest Platform
+# Complete quantum computing infrastructure with mathematical foundations
+
+version: "3.8"
+
+services:
+  # PostgreSQL database for quantum states and results
+  postgres:
+    image: postgres:15-alpine
+    container_name: quantum-postgres
+    environment:
+      POSTGRES_DB: quantumdb
+      POSTGRES_USER: quantumuser
+      POSTGRES_PASSWORD: quantumpass
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schemas/quantum_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quantumuser -d quantumdb"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Redis for quantum circuit caching
+  redis:
+    image: redis:7-alpine
+    container_name: quantum-redis
+    command: redis-server --requirepass redisquantum --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redisquantum", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Quantum Linear Algebra Service
+  quantum-algebra:
+    build:
+      context: ./services/quantum-algebra
+      dockerfile: Dockerfile
+    container_name: quantum-algebra-service
+    environment:
+      - REDIS_URL=redis://:redisquantum@redis:6379
+      - LOG_LEVEL=INFO
+      - MAX_QUBITS=20
+      - SIMULATION_TIMEOUT=3600
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+    volumes:
+      - ./services/quantum-algebra/src:/app/src:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: "8"
+        reservations:
+          memory: 8G
+          cpus: "4"
+
+  # Quantum Workload Scheduler Service
+  quantum-scheduler:
+    build:
+      context: ./services/quantum-scheduler
+      dockerfile: Dockerfile
+    container_name: quantum-scheduler-service
+    environment:
+      - REDIS_URL=redis://:redisquantum@redis:6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=quantumuser
+      - POSTGRES_PASSWORD=quantumpass
+      - POSTGRES_DB=quantumdb
+      - LOG_LEVEL=INFO
+    ports:
+      - "8081:8081"
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./services/quantum-scheduler/src:/app/src:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Quantum Error Correction Service
+  quantum-error-correction:
+    build:
+      context: ./services/quantum-fault-tolerance
+      dockerfile: Dockerfile
+    container_name: quantum-error-correction-service
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=quantumuser
+      - POSTGRES_PASSWORD=quantumpass
+      - POSTGRES_DB=quantumdb
+      - LOG_LEVEL=INFO
+      - ERROR_CORRECTION_ENABLED=true
+    ports:
+      - "8082:8082"
+    depends_on:
+      - postgres
+    volumes:
+      - ./services/quantum-fault-tolerance/src:/app/src:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Quantum-Classical Interface Service
+  quantum-interface:
+    build:
+      context: ./services/quantum-classical-interface
+      dockerfile: Dockerfile
+    container_name: quantum-interface-service
+    environment:
+      - LOG_LEVEL=INFO
+    ports:
+      - "8083:8083"
+    volumes:
+      - ./services/quantum-classical-interface/src:/app/src:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Quantum Machine Learning Service
+  quantum-ml:
+    build:
+      context: ./services/quantum-ml
+      dockerfile: Dockerfile
+    container_name: quantum-ml-service
+    environment:
+      - REDIS_URL=redis://:redisquantum@redis:6379
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=quantumuser
+      - POSTGRES_PASSWORD=quantumpass
+      - POSTGRES_DB=quantumdb
+      - LOG_LEVEL=INFO
+    ports:
+      - "8084:8084"
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./services/quantum-ml/src:/app/src:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: "4"
+
+  # API Gateway (Nginx)
+  api-gateway:
+    image: nginx:alpine
+    container_name: quantum-api-gateway
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - quantum-algebra
+      - quantum-scheduler
+      - quantum-error-correction
+      - quantum-interface
+      - quantum-ml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: quantum-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--storage.tsdb.retention.time=200h"
+      - "--web.enable-lifecycle"
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: quantum-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=quantumadmin
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Quantum Algorithm Benchmarking Service
+  quantum-benchmarks:
+    build:
+      context: ./services/quantum-benchmarks
+      dockerfile: Dockerfile
+    container_name: quantum-benchmarks-service
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=quantumuser
+      - POSTGRES_PASSWORD=quantumpass
+      - POSTGRES_DB=quantumdb
+      - QUANTUM_ALGEBRA_URL=http://quantum-algebra:8080
+      - LOG_LEVEL=INFO
+    ports:
+      - "8085:8085"
+    depends_on:
+      - postgres
+      - quantum-algebra
+    volumes:
+      - ./benchmarks:/app/benchmarks:ro
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+  # Quantum App Runner Lite (for cloud deployment testing)
+  quantum-app-runner-lite:
+    build:
+      context: ./app-runner/quantum-service-lite
+      dockerfile: Dockerfile
+    container_name: quantum-app-runner-lite
+    environment:
+      - PORT=8090
+      - LOG_LEVEL=INFO
+      - MAX_QUBITS=12
+      - MAX_SHOTS=10000
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - quantum-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  quantum-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
