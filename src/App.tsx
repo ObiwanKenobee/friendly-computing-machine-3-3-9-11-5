@@ -384,7 +384,7 @@ function App() {
                                 path="/"
                                 element={
                                   <OptimizedRoute pageName="Landing Page">
-                                    <LandingPage />
+                                    <LandingPageComponent />
                                   </OptimizedRoute>
                                 }
                               />
