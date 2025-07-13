@@ -228,6 +228,7 @@ const MetaFinancialHub = createSafeLazyImport(
 
 // Global Payment Processing
 const GlobalPaymentsPage = createSafeLazyImport(
+ () => import("./pages/global-payments"),
   () => import("./pages/global-payments"),
   "GlobalPaymentsPage",
 );
