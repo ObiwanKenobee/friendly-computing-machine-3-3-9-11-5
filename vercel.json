@@ -67,6 +67,10 @@
   ],
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://quantum-api-gateway.quantumvest.com/api/v1/$1"
+    },
+    {
       "source": "/quantum/(.*)",
       "destination": "/index.html"
     },
@@ -76,6 +80,10 @@
     },
     {
       "source": "/auth/(.*)",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ],
