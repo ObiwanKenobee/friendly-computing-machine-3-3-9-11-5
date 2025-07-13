@@ -2,16 +2,6 @@
   "version": 2,
   "name": "quantumvest-platform",
 
-  "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "https://quantum-api-gateway.quantumvest.com/api/v1/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
-    }
-  ],
   "env": {
     "VITE_API_BASE_URL": "https://quantum-api-gateway.quantumvest.com",
     "VITE_QUANTUM_ALGEBRA_URL": "https://quantum-api-gateway.quantumvest.com/api/v1/algebra",
