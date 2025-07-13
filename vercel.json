@@ -1,15 +1,7 @@
 {
   "version": 2,
   "name": "quantumvest-platform",
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
-  ],
+
   "routes": [
     {
       "src": "/api/(.*)",
